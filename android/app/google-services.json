@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "207027489374",
+    "project_id": "manaweave-ba267",
+    "storage_bucket": "manaweave-ba267.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:207027489374:android:33dcec887e74b57f8802cf",
+        "android_client_info": {
+          "package_name": "com.choppeduncs.manaweave"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCCf2u7_7K00ekA4rTsAMm9m0wLooiWhnA"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
