@@ -1,9 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:manaweave/models/card.dart';
-import 'package:manaweave/repositories/deck_repository.dart';
-import 'package:manaweave/repositories/card_repository.dart';
+import 'package:manaweave/repositories/firebase_deck_repository.dart';
+import 'package:manaweave/repositories/firebase_card_repository.dart';
 import 'package:manaweave/components/mana_cost_display.dart';
 import 'package:manaweave/components/card_components.dart';
+import 'package:provider/provider.dart';
 
 class DeckBuilderScreen extends StatefulWidget {
   final String deckId;
@@ -15,52 +16,74 @@ class DeckBuilderScreen extends StatefulWidget {
 }
 
 class _DeckBuilderScreenState extends State<DeckBuilderScreen> {
-  final DeckRepository _deckRepository = DeckRepository();
-  final CardRepository _cardRepository = CardRepository();
+  late final FirebaseDeckRepository _deckRepository;
+  late final FirebaseCardRepository _cardRepository;
+
+  @override
+  void initState() {
+    super.initState();
+    _deckRepository = context.read<FirebaseDeckRepository>();
+    _cardRepository = context.read<FirebaseCardRepository>();
+  }
 
   @override
   Widget build(BuildContext context) {
-    final deck = _deckRepository.getDeckById(widget.deckId);
-    if (deck == null) {
-      return Scaffold(
-        appBar: AppBar(title: const Text('Deck Not Found')),
-        body: const Center(child: Text('Deck not found')),
-      );
-    }
+    return StreamBuilder<Deck?>(
+      stream: _deckRepository.getDeckById(widget.deckId).asStream(),
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return Scaffold(appBar: AppBar(), body: const Center(child: CircularProgressIndicator()));
+        }
+        if (snapshot.hasError || !snapshot.hasData || snapshot.data == null) {
+          return Scaffold(
+            appBar: AppBar(title: const Text('Deck Not Found')),
+            body: const Center(child: Text('Deck not found')),
+          );
+        }
 
-    final commander = deck.commanderIds.isNotEmpty 
-      ? _cardRepository.getCardById(deck.commanderIds.first)
-      : null;
-    final validationErrors = _deckRepository.getValidationErrors(deck);
+        final deck = snapshot.data!;
+        return FutureBuilder<List<MTGCard>>(
+          future: _cardRepository.getCardsByIds(deck.mainboard.map((e) => e.cardId).toList()..addAll(deck.commanderIds)),
+          builder: (context, cardSnapshot) {
+            if (!cardSnapshot.hasData) {
+              return Scaffold(appBar: AppBar(), body: const Center(child: CircularProgressIndicator()));
+            }
+            final allCards = cardSnapshot.data!;
+            final commander = allCards.firstWhere((c) => c.id == deck.commanderIds.first);
+            final validationErrors = _deckRepository.getValidationErrors(deck, allCards);
 
-    return Scaffold(
-      appBar: AppBar(
-        title: Text(deck.name),
-        backgroundColor: Theme.of(context).colorScheme.primaryContainer,
-        foregroundColor: Theme.of(context).colorScheme.onPrimaryContainer,
-        actions: [
-          PopupMenuButton<String>(
-            onSelected: (value) => _handleMenuAction(value, deck),
-            itemBuilder: (context) => [
-              const PopupMenuItem(value: 'autofill', child: Text('Autofill...')),
-              const PopupMenuItem(value: 'suggest_lands', child: Text('Suggest Lands...')),
-              const PopupMenuItem(value: 'export', child: Text('Export')),
-              const PopupMenuItem(value: 'delete', child: Text('Delete Deck')),
-            ],
-          ),
-        ],
-      ),
-      body: Column(
-        children: [
-          _buildDeckHeader(deck, commander),
-          if (validationErrors.isNotEmpty) _buildValidationPanel(validationErrors),
-          Expanded(child: _buildDeckList(deck)),
-        ],
-      ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: () => _showComingSoonSnackBar('Add Cards'),
-        child: const Icon(Icons.add),
-      ),
+            return Scaffold(
+              appBar: AppBar(
+                title: Text(deck.name),
+                backgroundColor: Theme.of(context).colorScheme.primaryContainer,
+                foregroundColor: Theme.of(context).colorScheme.onPrimaryContainer,
+                actions: [
+                  PopupMenuButton<String>(
+                    onSelected: (value) => _handleMenuAction(value, deck),
+                    itemBuilder: (context) => [
+                      const PopupMenuItem(value: 'autofill', child: Text('Autofill...')),
+                      const PopupMenuItem(value: 'suggest_lands', child: Text('Suggest Lands...')),
+                      const PopupMenuItem(value: 'export', child: Text('Export')),
+                      const PopupMenuItem(value: 'delete', child: Text('Delete Deck')),
+                    ],
+                  ),
+                ],
+              ),
+              body: Column(
+                children: [
+                  _buildDeckHeader(deck, commander),
+                  if (validationErrors.isNotEmpty) _buildValidationPanel(validationErrors),
+                  Expanded(child: _buildDeckList(deck, allCards)),
+                ],
+              ),
+              floatingActionButton: FloatingActionButton(
+                onPressed: () => _showComingSoonSnackBar('Add Cards'),
+                child: const Icon(Icons.add),
+              ),
+            );
+          },
+        );
+      },
     );
   }
 
@@ -72,13 +95,10 @@ class _DeckBuilderScreenState extends State<DeckBuilderScreen> {
       ),
       child: Column(
         children: [
-          // Commander
           if (commander != null) ...[
             CommanderTile(commander: commander),
             const SizedBox(height: 12),
           ],
-          
-          // Stats Row
           Row(
             children: [
               Expanded(child: _buildStatCard('Cards', '${deck.totalCards}/100')),
@@ -105,15 +125,15 @@ class _DeckBuilderScreenState extends State<DeckBuilderScreen> {
           Text(
             value,
             style: Theme.of(context).textTheme.titleMedium?.copyWith(
-              fontWeight: FontWeight.bold,
-              color: Theme.of(context).colorScheme.primary,
-            ),
+                  fontWeight: FontWeight.bold,
+                  color: Theme.of(context).colorScheme.primary,
+                ),
           ),
           Text(
             label,
             style: Theme.of(context).textTheme.bodySmall?.copyWith(
-              color: Theme.of(context).colorScheme.onSurfaceVariant,
-            ),
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
           ),
         ],
       ),
@@ -124,10 +144,10 @@ class _DeckBuilderScreenState extends State<DeckBuilderScreen> {
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: Theme.of(context).colorScheme.errorContainer.withValues(alpha: 0.3),
+        color: Theme.of(context).colorScheme.errorContainer.withOpacity(0.3),
         border: Border(
           bottom: BorderSide(
-            color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.2),
+            color: Theme.of(context).colorScheme.outline.withOpacity(0.2),
           ),
         ),
       ),
@@ -145,9 +165,9 @@ class _DeckBuilderScreenState extends State<DeckBuilderScreen> {
               Text(
                 'Deck Issues',
                 style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                  color: Theme.of(context).colorScheme.error,
-                  fontWeight: FontWeight.w600,
-                ),
+                      color: Theme.of(context).colorScheme.error,
+                      fontWeight: FontWeight.w600,
+                    ),
               ),
             ],
           ),
@@ -155,28 +175,30 @@ class _DeckBuilderScreenState extends State<DeckBuilderScreen> {
           Wrap(
             spacing: 8,
             runSpacing: 4,
-            children: errors.map((error) => ValidationChip(
-              text: error,
-              severity: error.contains('banned') || error.contains('duplicates') || error.contains('outside color')
-                ? ValidationSeverity.error
-                : ValidationSeverity.warning,
-            )).toList(),
+            children: errors
+                .map((error) => ValidationChip(
+                      text: error,
+                      severity: error.contains('banned') ||
+                              error.contains('duplicates') ||
+                              error.contains('outside color')
+                          ? ValidationSeverity.error
+                          : ValidationSeverity.warning,
+                    ))
+                .toList(),
           ),
         ],
       ),
     );
   }
 
-  Widget _buildDeckList(Deck deck) {
-    // Group cards by section
+  Widget _buildDeckList(Deck deck, List<MTGCard> allCards) {
     final sections = <String, List<DeckEntry>>{};
     for (final entry in deck.mainboard) {
-      sections[entry.section] = sections[entry.section] ?? [];
-      sections[entry.section]!.add(entry);
+      sections.putIfAbsent(entry.section, () => []).add(entry);
     }
 
     if (sections.isEmpty) {
-      return _buildEmptyDeckState();
+      return _buildEmptyDeckState(deck);
     }
 
     final sectionNames = sections.keys.toList()..sort();
@@ -187,12 +209,12 @@ class _DeckBuilderScreenState extends State<DeckBuilderScreen> {
       itemBuilder: (context, index) {
         final sectionName = sectionNames[index];
         final sectionEntries = sections[sectionName]!;
-        return _buildSection(sectionName, sectionEntries);
+        return _buildSection(deck, sectionName, sectionEntries, allCards);
       },
     );
   }
 
-  Widget _buildEmptyDeckState() {
+  Widget _buildEmptyDeckState(Deck deck) {
     return Center(
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
@@ -200,25 +222,25 @@ class _DeckBuilderScreenState extends State<DeckBuilderScreen> {
           Icon(
             Icons.auto_fix_high,
             size: 64,
-            color: Theme.of(context).colorScheme.onSurfaceVariant.withValues(alpha: 0.6),
+            color: Theme.of(context).colorScheme.onSurfaceVariant.withOpacity(0.6),
           ),
           const SizedBox(height: 16),
           Text(
             'Your deck is empty',
             style: Theme.of(context).textTheme.titleMedium?.copyWith(
-              color: Theme.of(context).colorScheme.onSurfaceVariant,
-            ),
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
           ),
           const SizedBox(height: 8),
           Text(
             'Use Autofill to get started quickly',
             style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-              color: Theme.of(context).colorScheme.onSurfaceVariant.withValues(alpha: 0.8),
-            ),
+                  color: Theme.of(context).colorScheme.onSurfaceVariant.withOpacity(0.8),
+                ),
           ),
           const SizedBox(height: 24),
           FilledButton.icon(
-            onPressed: () => _showAutofillDialog(),
+            onPressed: () => _showAutofillDialog(deck),
             icon: const Icon(Icons.auto_fix_high),
             label: const Text('Autofill Deck'),
           ),
@@ -227,7 +249,7 @@ class _DeckBuilderScreenState extends State<DeckBuilderScreen> {
     );
   }
 
-  Widget _buildSection(String sectionName, List<DeckEntry> entries) {
+  Widget _buildSection(Deck deck, String sectionName, List<DeckEntry> entries, List<MTGCard> allCards) {
     final totalCards = entries.fold(0, (sum, entry) => sum + entry.qty);
     
     return Card(
@@ -240,15 +262,15 @@ class _DeckBuilderScreenState extends State<DeckBuilderScreen> {
           ),
         ),
         subtitle: Text('$totalCards cards'),
-        children: entries.map((entry) => _buildCardEntry(entry)).toList(),
+        children: entries.map((entry) {
+          final card = allCards.firstWhere((c) => c.id == entry.cardId);
+          return _buildCardEntry(deck, entry, card);
+        }).toList(),
       ),
     );
   }
 
-  Widget _buildCardEntry(DeckEntry entry) {
-    final card = _cardRepository.getCardById(entry.cardId);
-    if (card == null) return const SizedBox.shrink();
-
+  Widget _buildCardEntry(Deck deck, DeckEntry entry, MTGCard card) {
     return ListTile(
       leading: ClipRRect(
         borderRadius: BorderRadius.circular(4),
@@ -279,7 +301,7 @@ class _DeckBuilderScreenState extends State<DeckBuilderScreen> {
           Text('${entry.qty}x'),
           const SizedBox(width: 8),
           PopupMenuButton<String>(
-            onSelected: (value) => _handleCardAction(entry, value),
+            onSelected: (value) => _handleCardAction(deck, entry, value),
             itemBuilder: (context) => [
               const PopupMenuItem(value: 'increase', child: Text('Add Copy')),
               const PopupMenuItem(value: 'decrease', child: Text('Remove Copy')),
@@ -289,7 +311,6 @@ class _DeckBuilderScreenState extends State<DeckBuilderScreen> {
         ],
       ),
       onTap: () {
-        // Show card detail or quick actions
         _showComingSoonSnackBar('Card Details');
       },
     );
@@ -298,7 +319,7 @@ class _DeckBuilderScreenState extends State<DeckBuilderScreen> {
   void _handleMenuAction(String action, Deck deck) {
     switch (action) {
       case 'autofill':
-        _showAutofillDialog();
+        _showAutofillDialog(deck);
         break;
       case 'suggest_lands':
         _showComingSoonSnackBar('Suggest Lands');
@@ -312,24 +333,29 @@ class _DeckBuilderScreenState extends State<DeckBuilderScreen> {
     }
   }
 
-  void _handleCardAction(DeckEntry entry, String action) {
+  void _handleCardAction(Deck deck, DeckEntry entry, String action) {
+    final newMainboard = List<DeckEntry>.from(deck.mainboard);
+    final entryIndex = newMainboard.indexWhere((e) => e.cardId == entry.cardId);
+
     switch (action) {
       case 'increase':
-        _deckRepository.addCardToDeck(widget.deckId, entry.cardId, section: entry.section);
-        setState(() {});
+        newMainboard[entryIndex] = entry.copyWith(qty: entry.qty + 1);
         break;
       case 'decrease':
-        _deckRepository.removeCardFromDeck(widget.deckId, entry.cardId);
-        setState(() {});
+        if (entry.qty > 1) {
+          newMainboard[entryIndex] = entry.copyWith(qty: entry.qty - 1);
+        } else {
+          newMainboard.removeAt(entryIndex);
+        }
         break;
       case 'remove':
-        _deckRepository.removeCardFromDeck(widget.deckId, entry.cardId, qty: entry.qty);
-        setState(() {});
+        newMainboard.removeAt(entryIndex);
         break;
     }
+    _deckRepository.updateDeckMainboard(deck.id, newMainboard);
   }
 
-  void _showAutofillDialog() {
+  void _showAutofillDialog(Deck deck) {
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
@@ -343,7 +369,7 @@ class _DeckBuilderScreenState extends State<DeckBuilderScreen> {
           FilledButton(
             onPressed: () {
               Navigator.of(context).pop();
-              _performAutofill();
+              _performAutofill(deck);
             },
             child: const Text('Autofill'),
           ),
@@ -352,17 +378,13 @@ class _DeckBuilderScreenState extends State<DeckBuilderScreen> {
     );
   }
 
-  void _performAutofill() {
-    final deck = _deckRepository.getDeckById(widget.deckId);
-    if (deck == null) return;
-
+  void _performAutofill(Deck deck) {
     final config = AutofillConfig(
       strategy: deck.strategyTags.isNotEmpty ? deck.strategyTags.first : 'Balanced',
       landGoal: deck.landGoal,
     );
 
-    _deckRepository.autofillDeck(widget.deckId, config);
-    setState(() {});
+    _deckRepository.autofillDeck(deck, config, _cardRepository);
 
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(content: Text('Deck autofilled!')),
@@ -399,6 +421,17 @@ class _DeckBuilderScreenState extends State<DeckBuilderScreen> {
   void _showComingSoonSnackBar(String feature) {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text('$feature feature coming soon!')),
+    );
+  }
+}
+
+extension on DeckEntry {
+  DeckEntry copyWith({int? qty}) {
+    return DeckEntry(
+      cardId: cardId,
+      qty: qty ?? this.qty,
+      section: section,
+      cmc: cmc,
     );
   }
 }

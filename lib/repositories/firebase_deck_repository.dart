@@ -55,4 +55,71 @@ class FirebaseDeckRepository {
     );
     return docRef.id;
   }
+
+  Future<void> addCardToDeck(String deckId, DeckEntry entry) async {
+    await _decksRef().doc(deckId).update({
+      'mainboard': FieldValue.arrayUnion([entry.toFirestore()])
+    });
+  }
+
+  Future<void> removeCardFromDeck(String deckId, DeckEntry entry) async {
+    await _decksRef().doc(deckId).update({
+      'mainboard': FieldValue.arrayRemove([entry.toFirestore()])
+    });
+  }
+
+  Future<void> updateDeckMainboard(String deckId, List<DeckEntry> mainboard) async {
+    await _decksRef().doc(deckId).update({
+      'mainboard': mainboard.map((e) => e.toFirestore()).toList(),
+    });
+  }
+
+  // A full implementation would require fetching cards and complex logic.
+  // This is a placeholder that adds a few staples.
+  Future<void> autofillDeck(Deck deck, AutofillConfig config, FirebaseCardRepository cardRepo) async {
+    final commanderColorIdentity = deck.commanderIds.isEmpty
+        ? <String>[]
+        : (await cardRepo.getCardById(deck.commanderIds.first))
+                ?.colorIdentity ??
+            [];
+
+    final autofillCards = await cardRepo.getAutofillCards(config.strategy, commanderColorIdentity);
+    final newEntries = autofillCards.map((card) => DeckEntry(cardId: card.id, qty: 1, section: 'Autofill')).toList();
+
+    await _decksRef().doc(deck.id).update({
+      'mainboard': FieldValue.arrayUnion(newEntries.map((e) => e.toFirestore()).toList()),
+      'landGoal': config.landGoal,
+      'budgetPerCardUsd': config.budgetPerCardUsd,
+    });
+  }
+
+  List<String> getValidationErrors(Deck deck, List<MTGCard> allCards) {
+    final errors = <String>[];
+    final mainboardCards = <String, int>{};
+
+    for (final entry in deck.mainboard) {
+      mainboardCards[entry.cardId] = (mainboardCards[entry.cardId] ?? 0) + entry.qty;
+    }
+
+    if (deck.totalCards != 100) {
+      errors.add('Deck size ${deck.totalCards}/100');
+    }
+
+    final commander = allCards.firstWhere((c) => c.id == deck.commanderIds.first);
+    final commanderColorIdentity = commander.colorIdentity;
+
+    for (final entry in deck.mainboard) {
+      final card = allCards.firstWhere((c) => c.id == entry.cardId);
+      if (entry.qty > 1 && !card.isBasicLand && !card.isAnyNumber) {
+        errors.add('${entry.qty}x ${card.name} (non-basic)');
+      }
+      if (!card.colorIdentity.every((c) => commanderColorIdentity.contains(c))) {
+        errors.add('${card.name} is outside color identity');
+      }
+      if (card.isBanned) {
+        errors.add('${card.name} is banned');
+      }
+    }
+    return errors;
+  }
 }

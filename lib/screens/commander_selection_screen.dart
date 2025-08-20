@@ -1,8 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:manaweave/models/card.dart';
-import 'package:manaweave/repositories/card_repository.dart';
+import 'package:manaweave/repositories/firebase_card_repository.dart';
 import 'package:manaweave/components/mana_cost_display.dart';
 import 'package:manaweave/components/card_components.dart';
+import 'package:provider/provider.dart';
 
 class CommanderSelectionScreen extends StatefulWidget {
   final Function(String commanderId, String? strategy) onCommanderSelected;
@@ -17,7 +18,7 @@ class CommanderSelectionScreen extends StatefulWidget {
 }
 
 class _CommanderSelectionScreenState extends State<CommanderSelectionScreen> {
-  final CardRepository _cardRepository = CardRepository();
+  late final FirebaseCardRepository _cardRepository;
   final TextEditingController _searchController = TextEditingController();
   
   List<String> _selectedColors = [];
@@ -33,6 +34,12 @@ class _CommanderSelectionScreenState extends State<CommanderSelectionScreen> {
     'Spellslinger',
     'Ramp',
   ];
+
+  @override
+  void initState() {
+    super.initState();
+    _cardRepository = context.read<FirebaseCardRepository>();
+  }
 
   @override
   void dispose() {
@@ -173,62 +180,72 @@ class _CommanderSelectionScreenState extends State<CommanderSelectionScreen> {
   }
 
   Widget _buildCommanderList() {
-    var commanders = _cardRepository.getCommanderCards();
-    
-    // Apply filters
-    commanders = commanders.where((commander) {
-      // Search filter
-      if (_searchQuery.isNotEmpty) {
-        if (!commander.name.toLowerCase().contains(_searchQuery.toLowerCase()) &&
-            !commander.oracleText.toLowerCase().contains(_searchQuery.toLowerCase())) {
-          return false;
+    return FutureBuilder<List<MTGCard>>(
+      future: _cardRepository.getCommanderCards(),
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return const Center(child: CircularProgressIndicator());
         }
-      }
-      
-      // Color filter
-      if (_selectedColors.isNotEmpty) {
-        if (!_selectedColors.every((color) => commander.colorIdentity.contains(color))) {
-          return false;
+        if (snapshot.hasError) {
+          return Center(child: Text('Error: ${snapshot.error}'));
         }
-      }
-      
-      return true;
-    }).toList();
+        if (!snapshot.hasData || snapshot.data!.isEmpty) {
+          return const Center(child: Text('No commanders found.'));
+        }
 
-    if (commanders.isEmpty) {
-      return Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(
-              Icons.search_off,
-              size: 64,
-              color: Theme.of(context).colorScheme.onSurfaceVariant.withValues(alpha: 0.6),
-            ),
-            const SizedBox(height: 16),
-            Text(
-              'No commanders found',
-              style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                color: Theme.of(context).colorScheme.onSurfaceVariant,
-              ),
-            ),
-            const SizedBox(height: 8),
-            Text(
-              'Try adjusting your filters',
-              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                color: Theme.of(context).colorScheme.onSurfaceVariant.withValues(alpha: 0.8),
-              ),
-            ),
-          ],
-        ),
-      );
-    }
+        var commanders = snapshot.data!;
 
-    return ListView.separated(
-      padding: const EdgeInsets.symmetric(horizontal: 16),
-      itemCount: commanders.length,
-      separatorBuilder: (context, index) => const SizedBox(height: 8),
-      itemBuilder: (context, index) => _buildCommanderCard(commanders[index]),
+        commanders = commanders.where((commander) {
+          if (_searchQuery.isNotEmpty) {
+            if (!commander.name.toLowerCase().contains(_searchQuery.toLowerCase()) &&
+                !commander.oracleText.toLowerCase().contains(_searchQuery.toLowerCase())) {
+              return false;
+            }
+          }
+          if (_selectedColors.isNotEmpty) {
+            if (!_selectedColors.every((color) => commander.colorIdentity.contains(color))) {
+              return false;
+            }
+          }
+          return true;
+        }).toList();
+
+        if (commanders.isEmpty) {
+          return Center(
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(
+                  Icons.search_off,
+                  size: 64,
+                  color: Theme.of(context).colorScheme.onSurfaceVariant.withOpacity(0.6),
+                ),
+                const SizedBox(height: 16),
+                Text(
+                  'No commanders found',
+                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  'Try adjusting your filters',
+                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                    color: Theme.of(context).colorScheme.onSurfaceVariant.withOpacity(0.8),
+                  ),
+                ),
+              ],
+            ),
+          );
+        }
+
+        return ListView.separated(
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          itemCount: commanders.length,
+          separatorBuilder: (context, index) => const SizedBox(height: 8),
+          itemBuilder: (context, index) => _buildCommanderCard(commanders[index]),
+        );
+      },
     );
   }
 
@@ -242,7 +259,6 @@ class _CommanderSelectionScreenState extends State<CommanderSelectionScreen> {
           padding: const EdgeInsets.all(12),
           child: Row(
             children: [
-              // Commander Image
               ClipRRect(
                 borderRadius: BorderRadius.circular(8),
                 child: Image.network(
@@ -260,7 +276,6 @@ class _CommanderSelectionScreenState extends State<CommanderSelectionScreen> {
               ),
               const SizedBox(width: 12),
               
-              // Commander Info
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -294,7 +309,6 @@ class _CommanderSelectionScreenState extends State<CommanderSelectionScreen> {
                 ),
               ),
               
-              // Selection Icon
               Icon(
                 Icons.arrow_forward_ios,
                 size: 16,
@@ -311,7 +325,7 @@ class _CommanderSelectionScreenState extends State<CommanderSelectionScreen> {
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
-        title: Text('Confirm Commander'),
+        title: const Text('Confirm Commander'),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,

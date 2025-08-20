@@ -1,10 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:manaweave/models/card.dart';
-import 'package:manaweave/repositories/card_repository.dart';
-import 'package:manaweave/repositories/collection_repository.dart';
+import 'package:manaweave/repositories/firebase_card_repository.dart';
+import 'package:manaweave/repositories/firebase_collection_repository.dart';
 import 'package:manaweave/components/mana_cost_display.dart';
 import 'package:manaweave/components/card_components.dart';
 import 'package:manaweave/screens/card_detail_screen.dart';
+import 'package:provider/provider.dart';
 
 class CollectionScreen extends StatefulWidget {
   const CollectionScreen({super.key});
@@ -14,14 +15,21 @@ class CollectionScreen extends StatefulWidget {
 }
 
 class _CollectionScreenState extends State<CollectionScreen> {
-  final CardRepository _cardRepository = CardRepository();
-  final CollectionRepository _collectionRepository = CollectionRepository();
+  late final FirebaseCardRepository _cardRepository;
+  late final FirebaseCollectionRepository _collectionRepository;
   final TextEditingController _searchController = TextEditingController();
   
   List<String> _selectedColors = [];
   String _selectedRarity = '';
   String _searchQuery = '';
   bool _ownedOnly = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _cardRepository = context.read<FirebaseCardRepository>();
+    _collectionRepository = context.read<FirebaseCollectionRepository>();
+  }
 
   @override
   void dispose() {
@@ -64,22 +72,36 @@ class _CollectionScreenState extends State<CollectionScreen> {
           ),
         ],
       ),
-      body: Column(
-        children: [
-          _buildKPIHeader(),
-          _buildSearchBar(),
-          _buildFilterChips(),
-          Expanded(child: _buildCollectionList()),
-        ],
+      body: StreamBuilder<List<CollectionEntry>>(
+        stream: _collectionRepository.getCollection(),
+        builder: (context, snapshot) {
+          if (snapshot.connectionState == ConnectionState.waiting) {
+            return const Center(child: CircularProgressIndicator());
+          }
+          if (snapshot.hasError) {
+            return Center(child: Text('Error: ${snapshot.error}'));
+          }
+          final collectionEntries = snapshot.data ?? [];
+
+          return Column(
+            children: [
+              _buildKPIHeader(collectionEntries),
+              _buildSearchBar(),
+              _buildFilterChips(),
+              Expanded(child: _buildCollectionList(collectionEntries)),
+            ],
+          );
+        },
       ),
     );
   }
 
-  Widget _buildKPIHeader() {
-    final totalCards = _collectionRepository.getTotalCards();
-    final uniqueCards = _collectionRepository.getUniqueCards();
-    final foilCount = _collectionRepository.getFoilCount();
-    final estimatedValue = _collectionRepository.getEstimatedValue();
+  Widget _buildKPIHeader(List<CollectionEntry> entries) {
+    final totalCards = entries.fold(0, (sum, entry) => sum + entry.totalCount);
+    final uniqueCards = entries.length;
+    final foilCount = entries.fold(0, (sum, entry) => sum + entry.foilCount);
+    // TODO: Implement value estimation with Firebase
+    const estimatedValue = 0.0;
 
     return Container(
       padding: const EdgeInsets.all(16),
@@ -107,7 +129,7 @@ class _CollectionScreenState extends State<CollectionScreen> {
         color: Theme.of(context).colorScheme.surface,
         borderRadius: BorderRadius.circular(12),
         border: Border.all(
-          color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.2),
+          color: Theme.of(context).colorScheme.outline.withOpacity(0.2),
         ),
       ),
       child: Column(
@@ -211,45 +233,53 @@ class _CollectionScreenState extends State<CollectionScreen> {
     );
   }
 
-  Widget _buildCollectionList() {
-    final ownedCardIds = _collectionRepository.getOwnedCardIds();
-    final allCards = _ownedOnly 
-      ? _cardRepository.allCards.where((card) => ownedCardIds.contains(card.id)).toList()
-      : _cardRepository.allCards;
-    
-    var filteredCards = allCards.where((card) {
-      // Search filter
-      if (_searchQuery.isNotEmpty) {
-        if (!card.name.toLowerCase().contains(_searchQuery.toLowerCase()) &&
-            !card.oracleText.toLowerCase().contains(_searchQuery.toLowerCase())) {
-          return false;
+  Widget _buildCollectionList(List<CollectionEntry> collectionEntries) {
+    return FutureBuilder<List<MTGCard>>(
+      future: _ownedOnly
+          ? _cardRepository.getCardsByIds(collectionEntries.map((e) => e.cardId).toList())
+          : _cardRepository.getAllCards(),
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return const Center(child: CircularProgressIndicator());
         }
-      }
-      
-      // Color filter
-      if (_selectedColors.isNotEmpty) {
-        if (!_selectedColors.every((color) => card.colorIdentity.contains(color))) {
-          return false;
+        if (snapshot.hasError) {
+          return Center(child: Text('Error: ${snapshot.error}'));
         }
-      }
-      
-      // Rarity filter
-      if (_selectedRarity.isNotEmpty && card.rarity != _selectedRarity) {
-        return false;
-      }
-      
-      return true;
-    }).toList();
+        final allCards = snapshot.data ?? [];
 
-    if (filteredCards.isEmpty) {
-      return _buildEmptyState();
-    }
+        var filteredCards = allCards.where((card) {
+          if (_searchQuery.isNotEmpty) {
+            if (!card.name.toLowerCase().contains(_searchQuery.toLowerCase()) &&
+                !card.oracleText.toLowerCase().contains(_searchQuery.toLowerCase())) {
+              return false;
+            }
+          }
+          if (_selectedColors.isNotEmpty) {
+            if (!_selectedColors.every((color) => card.colorIdentity.contains(color))) {
+              return false;
+            }
+          }
+          if (_selectedRarity.isNotEmpty && card.rarity != _selectedRarity) {
+            return false;
+          }
+          return true;
+        }).toList();
 
-    return ListView.separated(
-      padding: const EdgeInsets.all(16),
-      itemCount: filteredCards.length,
-      separatorBuilder: (context, index) => const SizedBox(height: 8),
-      itemBuilder: (context, index) => _buildCardTile(filteredCards[index]),
+        if (filteredCards.isEmpty) {
+          return _buildEmptyState();
+        }
+
+        return ListView.separated(
+          padding: const EdgeInsets.all(16),
+          itemCount: filteredCards.length,
+          separatorBuilder: (context, index) => const SizedBox(height: 8),
+          itemBuilder: (context, index) {
+            final card = filteredCards[index];
+            final collectionEntry = collectionEntries.firstWhere((e) => e.cardId == card.id, orElse: () => CollectionEntry(cardId: card.id, count: 0));
+            return _buildCardTile(card, collectionEntry);
+          },
+        );
+      },
     );
   }
 
@@ -261,7 +291,7 @@ class _CollectionScreenState extends State<CollectionScreen> {
           Icon(
             _ownedOnly ? Icons.inventory_2_outlined : Icons.search_off,
             size: 64,
-            color: Theme.of(context).colorScheme.onSurfaceVariant.withValues(alpha: 0.6),
+            color: Theme.of(context).colorScheme.onSurfaceVariant.withOpacity(0.6),
           ),
           const SizedBox(height: 16),
           Text(
@@ -286,9 +316,8 @@ class _CollectionScreenState extends State<CollectionScreen> {
     );
   }
 
-  Widget _buildCardTile(MTGCard card) {
-    final collectionEntry = _collectionRepository.getEntry(card.id);
-    final isOwned = collectionEntry != null;
+  Widget _buildCardTile(MTGCard card, CollectionEntry? collectionEntry) {
+    final isOwned = collectionEntry != null && collectionEntry.totalCount > 0;
     
     return Card(
       margin: EdgeInsets.zero,
@@ -367,7 +396,7 @@ class _CollectionScreenState extends State<CollectionScreen> {
                 Column(
                   children: [
                     Text(
-                      '${collectionEntry!.totalCount}',
+                      '${collectionEntry.totalCount}',
                       style: Theme.of(context).textTheme.titleMedium?.copyWith(
                         fontWeight: FontWeight.bold,
                         color: Theme.of(context).colorScheme.primary,
@@ -396,27 +425,13 @@ class _CollectionScreenState extends State<CollectionScreen> {
   }
 
   void _updateCardCount(String cardId, int newCount, int foilCount) {
-    final currentEntry = _collectionRepository.getEntry(cardId);
-    if (currentEntry == null) return;
-    
-    if (newCount == 0 && foilCount == 0) {
-      _collectionRepository.removeCard(cardId, count: currentEntry.count);
-    } else {
-      final countDiff = newCount - currentEntry.count;
-      if (countDiff > 0) {
-        _collectionRepository.addCard(cardId, count: countDiff);
-      } else if (countDiff < 0) {
-        _collectionRepository.removeCard(cardId, count: -countDiff);
-      }
-    }
-    setState(() {});
+    _collectionRepository.addCard(cardId, count: newCount, foilCount: foilCount);
   }
 
-  void _addCard(String cardId) {
-    _collectionRepository.addCard(cardId);
-    setState(() {});
+  void _addCard(String cardId) async {
+    await _collectionRepository.addCard(cardId);
     
-    final card = _cardRepository.getCardById(cardId);
+    final card = await _cardRepository.getCardById(cardId);
     if (mounted && card != null) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Added ${card.name} to collection')),

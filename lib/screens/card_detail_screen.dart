@@ -1,8 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:manaweave/models/card.dart';
-import 'package:manaweave/repositories/collection_repository.dart';
+import 'package:manaweave/repositories/firebase_collection_repository.dart';
 import 'package:manaweave/components/mana_cost_display.dart';
 import 'package:manaweave/components/card_components.dart';
+import 'package:provider/provider.dart';
 
 class CardDetailScreen extends StatefulWidget {
   final MTGCard card;
@@ -14,12 +15,16 @@ class CardDetailScreen extends StatefulWidget {
 }
 
 class _CardDetailScreenState extends State<CardDetailScreen> {
-  final CollectionRepository _collectionRepository = CollectionRepository();
+  late final FirebaseCollectionRepository _collectionRepository;
+
+  @override
+  void initState() {
+    super.initState();
+    _collectionRepository = context.read<FirebaseCollectionRepository>();
+  }
 
   @override
   Widget build(BuildContext context) {
-    final collectionEntry = _collectionRepository.getEntry(widget.card.id);
-    
     return Scaffold(
       appBar: AppBar(
         title: Text(widget.card.name),
@@ -35,7 +40,7 @@ class _CardDetailScreenState extends State<CardDetailScreen> {
             _buildOracleText(),
             _buildPriceInfo(),
             _buildLegalityInfo(),
-            _buildCollectionControls(collectionEntry),
+            _buildCollectionControls(),
           ],
         ),
       ),
@@ -324,101 +329,112 @@ class _CardDetailScreenState extends State<CardDetailScreen> {
     );
   }
 
-  Widget _buildCollectionControls(CollectionEntry? entry) {
-    return Container(
-      margin: const EdgeInsets.all(16),
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Theme.of(context).colorScheme.primaryContainer.withValues(alpha: 0.3),
-        borderRadius: BorderRadius.circular(12),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            'Collection',
-            style: Theme.of(context).textTheme.titleMedium?.copyWith(
-              fontWeight: FontWeight.w600,
-            ),
+  Widget _buildCollectionControls() {
+    return StreamBuilder<List<CollectionEntry>>(
+      stream: _collectionRepository.getCollection(),
+      builder: (context, snapshot) {
+        if (!snapshot.hasData) {
+          return const Center(child: CircularProgressIndicator());
+        }
+        final collectionEntries = snapshot.data!;
+        final entry = collectionEntries.firstWhere((e) => e.cardId == widget.card.id, orElse: () => CollectionEntry(cardId: widget.card.id, count: 0));
+
+        return Container(
+          margin: const EdgeInsets.all(16),
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: Theme.of(context).colorScheme.primaryContainer.withOpacity(0.3),
+            borderRadius: BorderRadius.circular(12),
           ),
-          const SizedBox(height: 16),
-          
-          if (entry != null) ...[
-            Row(
-              children: [
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Collection',
+                style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.w600,
+                    ),
+              ),
+              const SizedBox(height: 16),
+              if (entry.totalCount > 0) ...[
+                Row(
+                  children: [
+                    Text(
+                      'Regular Copies:',
+                      style: Theme.of(context).textTheme.bodyMedium,
+                    ),
+                    const Spacer(),
+                    CountStepper(
+                      value: entry.count,
+                      onChanged: (newCount) =>
+                          _updateCount(newCount, entry.foilCount),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                Row(
+                  children: [
+                    Text(
+                      'Foil Copies:',
+                      style: Theme.of(context).textTheme.bodyMedium,
+                    ),
+                    const Spacer(),
+                    CountStepper(
+                      value: entry.foilCount,
+                      onChanged: (newCount) =>
+                          _updateCount(entry.count, newCount),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 16),
+                Row(
+                  children: [
+                    Text(
+                      'Total Owned:',
+                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                            fontWeight: FontWeight.w600,
+                          ),
+                    ),
+                    const Spacer(),
+                    Text(
+                      '${entry.totalCount}',
+                      style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                            fontWeight: FontWeight.bold,
+                            color: Theme.of(context).colorScheme.primary,
+                          ),
+                    ),
+                  ],
+                ),
+              ] else ...[
                 Text(
-                  'Regular Copies:',
-                  style: Theme.of(context).textTheme.bodyMedium,
+                  'Not in your collection',
+                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                        color: Theme.of(context).colorScheme.onSurfaceVariant,
+                      ),
                 ),
-                const Spacer(),
-                CountStepper(
-                  value: entry.count,
-                  onChanged: (newCount) => _updateCount(newCount, entry.foilCount),
-                ),
-              ],
-            ),
-            const SizedBox(height: 12),
-            Row(
-              children: [
-                Text(
-                  'Foil Copies:',
-                  style: Theme.of(context).textTheme.bodyMedium,
-                ),
-                const Spacer(),
-                CountStepper(
-                  value: entry.foilCount,
-                  onChanged: (newCount) => _updateCount(entry.count, newCount),
-                ),
-              ],
-            ),
-            const SizedBox(height: 16),
-            Row(
-              children: [
-                Text(
-                  'Total Owned:',
-                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                    fontWeight: FontWeight.w600,
+                const SizedBox(height: 16),
+                SizedBox(
+                  width: double.infinity,
+                  child: FilledButton.icon(
+                    onPressed: _addToCollection,
+                    icon: const Icon(Icons.add_circle_outline),
+                    label: const Text('Add to Collection'),
                   ),
                 ),
-                const Spacer(),
-                Text(
-                  '${entry.totalCount}',
-                  style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                    fontWeight: FontWeight.bold,
-                    color: Theme.of(context).colorScheme.primary,
-                  ),
-                ),
               ],
-            ),
-          ] else ...[
-            Text(
-              'Not in your collection',
-              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                color: Theme.of(context).colorScheme.onSurfaceVariant,
+              const SizedBox(height: 8),
+              SizedBox(
+                width: double.infinity,
+                child: OutlinedButton.icon(
+                  onPressed: _showComingSoonSnackBar,
+                  icon: const Icon(Icons.style_outlined),
+                  label: const Text('Add to Deck'),
+                ),
               ),
-            ),
-            const SizedBox(height: 16),
-            SizedBox(
-              width: double.infinity,
-              child: FilledButton.icon(
-                onPressed: _addToCollection,
-                icon: const Icon(Icons.add_circle_outline),
-                label: const Text('Add to Collection'),
-              ),
-            ),
-          ],
-          
-          const SizedBox(height: 8),
-          SizedBox(
-            width: double.infinity,
-            child: OutlinedButton.icon(
-              onPressed: _showComingSoonSnackBar,
-              icon: const Icon(Icons.style_outlined),
-              label: const Text('Add to Deck'),
-            ),
+            ],
           ),
-        ],
-      ),
+        );
+      },
     );
   }
 
